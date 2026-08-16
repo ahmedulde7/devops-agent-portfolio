@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Rendered Terraform workspaces are generated per-request; never commit them.
+terraform/workspaces/*
+!terraform/workspaces/.gitkeep
+
+.env
+.venv/
+venv/
+
+# Terraform local state/cache (only relevant if you run terraform outside the agent)
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+
+node_modules/
+.DS_Store
