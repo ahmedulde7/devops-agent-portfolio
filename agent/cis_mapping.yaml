@@ -1,0 +1,97 @@
+# CIS-aligned control mapping for the S3 bucket compliance gate.
+#
+# These are Checkov static-analysis check IDs (https://www.checkov.io) curated
+# and mapped by hand to the closest CIS Amazon Web Services Foundations
+# Benchmark (v3.0.0) control. This is NOT an official CIS-certified mapping —
+# it is a practical, defensible mapping an engineer would maintain in-house to
+# turn a general-purpose IaC scanner into a CIS-flavored compliance gate.
+#
+# Each entry also carries the deterministic remediation this agent will apply
+# to the Terraform intent when the check fails, so the remediation loop stays
+# rule-based and auditable rather than left to free-form LLM edits of
+# security-relevant infrastructure code.
+
+checks:
+  - checkov_id: CKV_AWS_19
+    cis_control: "2.1.1"
+    title: "S3 bucket has server-side encryption enabled"
+    severity: HIGH
+    remediation_field: encryption
+    remediation_value: "AES256"
+    description: >
+      Ensure every S3 bucket has default server-side encryption configured so
+      objects are encrypted at rest even if a client forgets to request it.
+
+  - checkov_id: CKV2_AWS_6
+    cis_control: "2.1.2"
+    title: "S3 bucket has a Public Access Block configured"
+    severity: CRITICAL
+    remediation_field: block_public_access
+    remediation_value: true
+    description: >
+      Ensure the bucket has all four S3 Block Public Access settings enabled
+      (block public ACLs/policy, ignore public ACLs, restrict public buckets).
+
+  - checkov_id: CKV_AWS_21
+    cis_control: "2.1.3"
+    title: "S3 bucket has versioning enabled"
+    severity: MEDIUM
+    remediation_field: versioning
+    remediation_value: true
+    description: >
+      Ensure versioning is enabled so objects can be recovered from
+      accidental deletion/overwrite and to support MFA delete policies.
+
+  - checkov_id: CKV_AWS_18
+    cis_control: "2.1.4"
+    title: "S3 bucket has access logging enabled"
+    severity: MEDIUM
+    remediation_field: logging
+    remediation_value: true
+    description: >
+      Ensure S3 access logging is enabled so requests against the bucket are
+      recorded for audit and incident-response purposes.
+
+  - checkov_id: CKV_AWS_53
+    cis_control: "2.1.2"
+    title: "S3 bucket blocks public ACLs"
+    severity: CRITICAL
+    remediation_field: block_public_access
+    remediation_value: true
+    description: "Sub-control of the Public Access Block requirement (block_public_acls)."
+
+  - checkov_id: CKV_AWS_54
+    cis_control: "2.1.2"
+    title: "S3 bucket blocks public bucket policies"
+    severity: CRITICAL
+    remediation_field: block_public_access
+    remediation_value: true
+    description: "Sub-control of the Public Access Block requirement (block_public_policy)."
+
+  - checkov_id: CKV_AWS_55
+    cis_control: "2.1.2"
+    title: "S3 bucket ignores public ACLs"
+    severity: CRITICAL
+    remediation_field: block_public_access
+    remediation_value: true
+    description: "Sub-control of the Public Access Block requirement (ignore_public_acls)."
+
+  - checkov_id: CKV_AWS_56
+    cis_control: "2.1.2"
+    title: "S3 bucket restricts public buckets"
+    severity: CRITICAL
+    remediation_field: block_public_access
+    remediation_value: true
+    description: "Sub-control of the Public Access Block requirement (restrict_public_buckets)."
+
+  - checkov_id: CKV_AWS_379
+    cis_control: "2.1.5"
+    title: "S3 bucket enforces HTTPS-only access (secure transport)"
+    severity: HIGH
+    remediation_field: enforce_ssl
+    remediation_value: true
+    description: >
+      Ensure the bucket policy denies any request made over plain HTTP
+      (aws:SecureTransport condition).
+
+max_remediation_attempts: 3

@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DevOps Agent -- LangGraph + Ollama + Terraform + AWS MCP</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121821;
+    --border: #24303d;
+    --text: #e6edf3;
+    --muted: #8b98a5;
+    --accent: #4f9dff;
+    --ok: #3fb950;
+    --fail: #f85149;
+    --warn: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 20px 28px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  main {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 24px 20px 120px;
+  }
+  .examples { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+  .examples button {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--accent);
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .examples button:hover { border-color: var(--accent); }
+  .message {
+    margin-bottom: 18px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    background: var(--panel);
+  }
+  .message.user {
+    background: transparent;
+    border-style: dashed;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 999px;
+    margin-bottom: 10px;
+  }
+  .badge.completed { background: rgba(63,185,80,0.15); color: var(--ok); }
+  .badge.failed { background: rgba(248,81,73,0.15); color: var(--fail); }
+  .badge.unsupported_request { background: rgba(210,153,34,0.15); color: var(--warn); }
+  .badge.pending { background: rgba(79,157,255,0.15); color: var(--accent); }
+  .content table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; }
+  .content th, .content td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; }
+  .content code { background: #1c2530; padding: 1px 5px; border-radius: 4px; }
+  .content pre { background: #1c2530; padding: 10px; border-radius: 6px; overflow-x: auto; }
+  details { margin-top: 10px; color: var(--muted); font-size: 13px; }
+  details summary { cursor: pointer; }
+  form {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: var(--bg);
+    border-top: 1px solid var(--border);
+    padding: 16px 20px;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+  }
+  form .inner { display: flex; gap: 10px; width: 100%; max-width: 900px; }
+  textarea {
+    flex: 1;
+    resize: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+    height: 44px;
+  }
+  button[type="submit"] {
+    background: var(--accent);
+    color: #04101f;
+    border: none;
+    border-radius: 8px;
+    padding: 0 20px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button[disabled] { opacity: 0.6; cursor: default; }
+  .spinner { color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>DevOps Agent</h1>
+    <p>LangGraph + Ollama &middot; Terraform + AWS MCP server &middot; Checkov CIS gate &middot; LocalStack</p>
+  </header>
+  <main>
+    <div class="examples">
+      <button type="button" data-example="I want to deploy an S3 bucket for storing build artifacts">
+        "I want to deploy an S3 bucket"
+      </button>
+      <button type="button" data-example="Please launch me an RDS database">
+        Try an unsupported request
+      </button>
+    </div>
+    <div id="messages" data-testid="messages"></div>
+  </main>
+  <form id="chat-form">
+    <div class="inner">
+      <textarea id="message" data-testid="message-input" placeholder="e.g. I want to deploy an S3 bucket"></textarea>
+      <button type="submit" data-testid="send-button">Send</button>
+    </div>
+  </form>
+
+  <script>
+    // Small, dependency-free markdown renderer (headings, bold, inline
+    // code, fenced code blocks, pipe tables, bullet lists, paragraphs) --
+    // covers exactly what agent/report.py emits. Deliberately not pulling
+    // in a CDN markdown library: this project's whole pitch is that it
+    // runs fully offline, so the UI shouldn't quietly depend on internet
+    // access either.
+    function escapeHtml(s) {
+      return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function inlineMd(s) {
+      s = escapeHtml(s);
+      s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+      s = s.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+      return s;
+    }
+    function renderMarkdown(md) {
+      const lines = (md || '').split('\n');
+      let html = '';
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+
+        if (line.startsWith('```')) {
+          const codeLines = [];
+          i++;
+          while (i < lines.length && !lines[i].startsWith('```')) { codeLines.push(lines[i]); i++; }
+          i++;
+          html += `<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`;
+          continue;
+        }
+
+        const headingMatch = line.match(/^(#{1,4})\s+(.*)$/);
+        if (headingMatch) {
+          const level = Math.min(headingMatch[1].length + 1, 6);
+          html += `<h${level}>${inlineMd(headingMatch[2])}</h${level}>`;
+          i++;
+          continue;
+        }
+
+        if (line.includes('|') && lines[i + 1] && /^\s*\|?[-\s|:]+\|?\s*$/.test(lines[i + 1])) {
+          const headerCells = line.split('|').map(c => c.trim()).filter(c => c.length);
+          i += 2;
+          const rows = [];
+          while (i < lines.length && lines[i].includes('|')) {
+            rows.push(lines[i].split('|').map(c => c.trim()).filter(c => c.length));
+            i++;
+          }
+          html += '<table><thead><tr>' + headerCells.map(c => `<th>${inlineMd(c)}</th>`).join('') + '</tr></thead><tbody>';
+          rows.forEach(r => { html += '<tr>' + r.map(c => `<td>${inlineMd(c)}</td>`).join('') + '</tr>'; });
+          html += '</tbody></table>';
+          continue;
+        }
+
+        if (/^\s*-\s+/.test(line)) {
+          const items = [];
+          while (i < lines.length && /^\s*-\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*-\s+/, '')); i++; }
+          html += '<ul>' + items.map(it => `<li>${inlineMd(it)}</li>`).join('') + '</ul>';
+          continue;
+        }
+
+        if (line.trim() === '') { i++; continue; }
+
+        html += `<p>${inlineMd(line)}</p>`;
+        i++;
+      }
+      return html;
+    }
+
+    const messagesEl = document.getElementById('messages');
+    const form = document.getElementById('chat-form');
+    const input = document.getElementById('message');
+    const sendBtn = form.querySelector('button[type="submit"]');
+
+    document.querySelectorAll('.examples button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        input.value = btn.dataset.example;
+        input.focus();
+      });
+    });
+
+    function addUserMessage(text) {
+      const div = document.createElement('div');
+      div.className = 'message user';
+      div.setAttribute('data-testid', 'user-message');
+      div.textContent = text;
+      messagesEl.appendChild(div);
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function addAgentMessage({ status, response, events }) {
+      const div = document.createElement('div');
+      div.className = 'message agent';
+      div.setAttribute('data-testid', 'agent-message');
+      div.setAttribute('data-status', status);
+
+      const badge = document.createElement('span');
+      badge.className = `badge ${status}`;
+      badge.textContent = status.replace('_', ' ');
+      div.appendChild(badge);
+
+      const content = document.createElement('div');
+      content.className = 'content';
+      content.setAttribute('data-testid', 'agent-response');
+      content.innerHTML = renderMarkdown(response || '');
+      div.appendChild(content);
+
+      if (events && events.length) {
+        const details = document.createElement('details');
+        details.setAttribute('data-testid', 'agent-timeline');
+        const summary = document.createElement('summary');
+        summary.textContent = `Agent timeline (${events.length} steps)`;
+        details.appendChild(summary);
+        const ul = document.createElement('ul');
+        events.forEach(e => {
+          const li = document.createElement('li');
+          li.textContent = `${e.step}: ${e.message}`;
+          ul.appendChild(li);
+        });
+        details.appendChild(ul);
+        div.appendChild(details);
+      }
+
+      messagesEl.appendChild(div);
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+
+    function addPendingMessage() {
+      const div = document.createElement('div');
+      div.className = 'message agent';
+      div.setAttribute('data-testid', 'agent-pending');
+      div.innerHTML = '<span class="spinner">Agent is working -- parsing intent, generating Terraform, running the CIS gate, applying, verifying...</span>';
+      messagesEl.appendChild(div);
+      window.scrollTo(0, document.body.scrollHeight);
+      return div;
+    }
+
+    form.addEventListener('submit', async (evt) => {
+      evt.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+
+      addUserMessage(text);
+      input.value = '';
+      sendBtn.disabled = true;
+      const pending = addPendingMessage();
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text }),
+        });
+        const data = await res.json();
+        pending.remove();
+        addAgentMessage(data);
+      } catch (err) {
+        pending.remove();
+        addAgentMessage({ status: 'failed', response: `Request failed: ${err}`, events: [] });
+      } finally {
+        sendBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

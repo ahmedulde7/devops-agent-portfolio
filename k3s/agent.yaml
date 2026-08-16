@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: devops-agent
+data:
+  AGENT_LLM_BACKEND: "ollama"
+  OLLAMA_BASE_URL: "http://ollama:11434"
+  OLLAMA_MODEL: "llama3.1"
+  AWS_ENDPOINT_URL: "http://localstack:4566"
+  AWS_ACCESS_KEY_ID: "test"
+  AWS_SECRET_ACCESS_KEY: "test"
+  AWS_DEFAULT_REGION: "us-east-1"
+  TERRAFORM_BIN: "terraform"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-workspaces
+  namespace: devops-agent
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  namespace: devops-agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: agent }
+  template:
+    metadata:
+      labels: { app: agent }
+    spec:
+      containers:
+        - name: agent
+          # Build locally with `docker build -t devops-agent:local .` and
+          # import into k3s (e.g. `k3d image import devops-agent:local`),
+          # or push to a registry and swap the tag below.
+          image: devops-agent:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef: { name: agent-config }
+          volumeMounts:
+            - name: workspaces
+              mountPath: /app/terraform/workspaces
+          readinessProbe:
+            httpGet: { path: /api/health, port: 8000 }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+      volumes:
+        - name: workspaces
+          persistentVolumeClaim:
+            claimName: agent-workspaces
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent
+  namespace: devops-agent
+spec:
+  type: NodePort
+  selector: { app: agent }
+  ports:
+    - port: 8000
+      targetPort: 8000
+      nodePort: 30080
