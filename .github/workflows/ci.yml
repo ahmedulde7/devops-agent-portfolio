@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install ruff black
+      - run: ruff check agent mcp_server tests
+      - run: black --check agent mcp_server tests
+
+  unit-and-mcp-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - run: python -m playwright install --with-deps chromium
+      # These run with zero external infra: Checkov is a real offline
+      # scanner, the MCP server test spins up a real (in-process) moto S3
+      # server, and the LLM is LangChain's FakeListChatModel.
+      - run: pytest tests/ -v --browser chromium
+
+  terraform-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.8" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - name: Render a sample bucket and run `terraform validate`
+        run: |
+          python -c "
+          from agent.terraform_gen import render_s3_bucket, write_workspace
+          intent = {
+              'bucket_name': 'ci-sample-bucket', 'region': 'us-east-1',
+              'versioning': True, 'encryption': 'AES256',
+              'block_public_access': True, 'logging': True, 'enforce_ssl': True,
+              'tags': {},
+          }
+          files = render_s3_bucket(intent, request_id='ci', user_request='ci validate')
+          write_workspace('terraform/workspaces', 'ci', files)
+          "
+          cd terraform/workspaces/ci
+          terraform init -backend=false
+          terraform validate
+
+  localstack-e2e:
+    runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack:3.8
+        ports: ["4566:4566"]
+        env: { SERVICES: s3 }
+        options: >-
+          --health-cmd "curl -sf http://localhost:4566/_localstack/health"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.9.8" }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -r requirements.txt
+      - name: Deploy a real bucket to the LocalStack service container via the real MCP server + real terraform
+        env:
+          AWS_ENDPOINT_URL: http://localhost:4566
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+        run: |
+          python -c "
+          import asyncio
+          from agent.mcp_client import McpToolClient
+          from agent.terraform_gen import render_s3_bucket, write_workspace
+
+          async def main():
+              intent = {
+                  'bucket_name': 'ci-e2e-bucket', 'region': 'us-east-1',
+                  'versioning': True, 'encryption': 'AES256',
+                  'block_public_access': True, 'logging': True, 'enforce_ssl': True,
+                  'tags': {},
+              }
+              files = render_s3_bucket(intent, request_id='ci-e2e', user_request='ci e2e')
+              workspace = write_workspace('terraform/workspaces', 'ci-e2e', files)
+              async with McpToolClient() as client:
+                  scan = await client.checkov_cis_scan(workspace)
+                  assert scan['passed'], scan['findings']
+                  result = await client.terraform_apply(workspace)
+                  assert result['success'], result
+                  details = await client.s3_get_bucket_details('ci-e2e-bucket')
+                  assert details['exists']
+                  print('E2E OK:', details)
+
+          asyncio.run(main())
+          "
